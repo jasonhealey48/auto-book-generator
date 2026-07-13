@@ -20,6 +20,10 @@ class ScriptedLLMClient(LLMClient):
             deepseek_model="deepseek-chat",
             mistral_model="mistral-large-latest",
             openrouter_model="anthropic/claude-3-haiku",
+            pollinations_model="openai/dall-e-3",
+            nvidia_model="nvidia/nemotron",
+            huggingface_model="hf/model",
+            groq_model="groq/llama-3.1-8b",
             fallback_chain="",
         )
         self.llm_provider = "openai"
