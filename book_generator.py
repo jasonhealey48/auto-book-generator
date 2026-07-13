@@ -406,21 +406,21 @@ class EngineGenerationWorker(QRunnable):
         if self._cancelled:
             raise RuntimeError('Generation cancelled')
 
-        self.signals.progress.emit('Phase 2/5: Generating outline...')
-        self.engine.generate_outline()
-        if self._cancelled:
-            raise RuntimeError('Generation cancelled')
-
-        self.signals.progress.emit('Phase 3/5: Generating characters...')
+        self.signals.progress.emit('Phase 2/5: Generating characters...')
         self.engine.generate_characters()
         if self._cancelled:
             raise RuntimeError('Generation cancelled')
 
         if settings.get('worldbuilding_needed', False):
-            self.signals.progress.emit('Phase 4/5: Generating worldbuilding...')
+            self.signals.progress.emit('Phase 3/5: Generating worldbuilding...')
             self.engine.generate_worldbuilding()
             if self._cancelled:
                 raise RuntimeError('Generation cancelled')
+
+        self.signals.progress.emit('Phase 4/5: Generating outline (informed by characters/world)...')
+        self.engine.generate_outline()
+        if self._cancelled:
+            raise RuntimeError('Generation cancelled')
 
         self.signals.progress.emit(f'Phase 5/5: Writing {total_chapters} chapters...')
         for chapter_num in range(1, total_chapters + 1):

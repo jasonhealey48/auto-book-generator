@@ -35,15 +35,19 @@ class OutlinerAgent(Agent):
                 else prompts.OUTLINE_PROMPT
             )
 
+            # Build the outline prompt pre-filled with the already-developed
+            # characters and worldbuilding so the outline is shaped by them.
+            ctx = project_knowledge_base.model_dump()
+            ctx["characters_block"] = self._characters_block(project_knowledge_base)
+            ctx["worldbuilding_block"] = self._worldbuilding_block(project_knowledge_base)
+            initial_prompt = outline_tmpl.format(**ctx)
+
             # Enhance the prompt with explicit chapter count instruction
             if project_knowledge_base.book_length == "Short Story":
-                initial_prompt = outline_tmpl.format(**project_knowledge_base.model_dump())
                 initial_prompt += f"\n\nIMPORTANT: This is a SHORT STORY. Generate EXACTLY {max_chapters} chapters. Do not exceed this limit."
             elif project_knowledge_base.book_length == "Novella":
-                initial_prompt = outline_tmpl.format(**project_knowledge_base.model_dump())
                 initial_prompt += f"\n\nIMPORTANT: This is a NOVELLA. Generate EXACTLY {max_chapters} chapters. Do not exceed this limit."
             else:
-                initial_prompt = outline_tmpl.format(**project_knowledge_base.model_dump())
                 initial_prompt += f"\n\nIMPORTANT: Generate at most {max_chapters} chapters."
 
             # Prepend audience + author voice directive
@@ -109,6 +113,42 @@ class OutlinerAgent(Agent):
             print("ERROR: Failed to generate outline. See log for details.")
             
             
+    def _characters_block(self, kb: "ProjectKnowledgeBase") -> str:
+        """Render the developed characters as a compact context block for the outline prompt."""
+        chars = getattr(kb, "characters", None) or {}
+        if not chars:
+            return "(No characters developed yet.)"
+        lines = []
+        for name, char in chars.items():
+            if hasattr(char, "model_dump"):
+                c = char.model_dump()
+            else:
+                c = dict(char) if isinstance(char, dict) else {}
+            role = c.get("role") or "character"
+            traits = c.get("personality_traits") or ""
+            arc = c.get("character_arc") or ""
+            lines.append(f"- {name} ({role}): traits: {traits}; arc: {arc}")
+        return "\n".join(lines)
+
+    def _worldbuilding_block(self, kb: "ProjectKnowledgeBase") -> str:
+        """Render the developed worldbuilding as a compact context block for the outline prompt."""
+        wb = getattr(kb, "worldbuilding", None)
+        if not wb:
+            return "(No worldbuilding developed yet.)"
+        if hasattr(wb, "model_dump"):
+            data = wb.model_dump()
+        elif isinstance(wb, dict):
+            data = wb
+        else:
+            return "(No worldbuilding developed yet.)"
+        lines = []
+        for key, value in data.items():
+            if isinstance(value, str) and value.strip():
+                label = key.replace("_", " ").title()
+                snippet = value.strip().split("\n")[0][:160]
+                lines.append(f"- {label}: {snippet}")
+        return "\n".join(lines) if lines else "(Worldbuilding present but empty.)"
+
     def _get_max_chapters(self, book_length: str) -> int:
         """Determine the maximum number of chapters based on book length."""
         if book_length == "Short Story":

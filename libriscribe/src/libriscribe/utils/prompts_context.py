@@ -197,6 +197,12 @@ The book is written in {language}.
 
 Description: {description}
 
+# Key Characters (already developed — weave these into the outline)
+{characters_block}
+
+# Worldbuilding (already developed — set scenes/locations against this world)
+{worldbuilding_block}
+
 IMPORTANT: Format your response EXACTLY as shown below, with consistent header formatting and numbering:
 If there's a book length: ({book_length}), adjust the number of chapters accordingly.
 
@@ -361,6 +367,12 @@ Create a PANEL-BASED outline for a {genre} GRAPHIC NOVEL titled "{title}" (categ
 The book is written in {language}.
 
 Description: {description}
+
+# Key Characters (already developed — depict these in your panels)
+{characters_block}
+
+# Worldbuilding (already developed — use these settings/locations)
+{worldbuilding_block}
 
 This is a GRAPHIC NOVEL: the story is told through illustrated panels, NOT prose paragraphs.
 For each chapter, list the panels. Each panel is ONE moment / ONE image.
