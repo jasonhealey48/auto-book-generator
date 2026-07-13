@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "project": {
+    "project_name": "my_fantasy_novel",
+    "title": "The Last Ember Gate",
+    "category": "Fiction",
+    "genre": "Fantasy",
+    "language": "English",
+    "description": "An exiled archivist discovers a buried gate that can resurrect lost empires, but each opening erases part of her identity.",
+    "num_characters": "3",
+    "num_characters_str": "3",
+    "worldbuilding_needed": true,
+    "review_preference": "AI",
+    "book_length": "Novel",
+    "tone": "Serious",
+    "target_audience": "Young Adult",
+    "num_chapters": "10",
+    "num_chapters_str": "10",
+    "llm_provider": "openai",
+    "model": "gpt-4o-mini",
+    "agent_models": {
+      "outliner": "gpt-4o-mini",
+      "editor": "gpt-4o"
+    },
+    "fallback_chain": ["claude", "openrouter/anthropic/claude-3-haiku"],
+    "agent_fallback_chains": {
+      "editor": ["openai/gpt-4o", "claude"]
+    },
+    "dynamic_questions": {
+      "q1": "What emotional wound drives the protagonist?",
+      "q2": "What makes the empire worth restoring or destroying?"
+    }
+  },
+  "workflow": {
+    "concept_approval": "auto",
+    "outline_review": "prompt",
+    "character_generation": "auto",
+    "worldbuilding_generation": "auto",
+    "chapter_writing": "auto",
+    "chapter_error_mode": "continue",
+    "formatting": "auto",
+    "output_format": "markdown"
+  }
+}

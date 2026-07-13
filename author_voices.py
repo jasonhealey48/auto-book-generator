@@ -7,7 +7,12 @@ Authors are grouped by genre. Each genre has 6+ names where possible, as the
 user requested. An "Auto" entry picks a sensible default for the genre.
 """
 
+import json
+import re
+import urllib.parse
+import requests
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -17,6 +22,7 @@ class AuthorVoice:
     style: str          # description of prose style
     donts: str          # what to avoid
     exemplar: str       # 1-3 sentences exemplifying the voice
+    visual_style: str = ""  # art-direction hint for illustrations (empty = generic fallback)
 
 
 # ---------- FANTASY ----------
@@ -223,16 +229,6 @@ WILLIAM_GIBSON = AuthorVoice(
            "High-tech low-life. Cool detachment. The future is already here, unevenly distributed."),
     donts=("80s nostalgia without the grit; clean futures; exposition dumps."),
     exemplar=("The sky above the port was the color of television, tuned to a dead channel."),
-)
-
-URSULA_LE_GUIN_SCIFI = AuthorVoice(
-    name="Ursula K. Le Guin (Sci-Fi)",
-    genre="Sci-Fi",
-    style=("Anthropological science fiction. Patient, clear, philosophical. "
-           "Character interiority dominates plot mechanics. Ansible not warp drive."),
-    donts=("Space-opera spectacle without social grounding; hard-SF gear porn."),
-    exemplar=("When the ship came in, the sky had been dark for an hour, and we did not "
-              "yet know that the dark was what we had been waiting for."),
 )
 
 OCTAVIA_BUTLER = AuthorVoice(
@@ -494,13 +490,105 @@ HARUKI_MURAKAMI = AuthorVoice(
 )
 
 
+# ---------- CHILDREN'S / PICTURE-BOOK VOICES ----------
+
+DR_SEUSS = AuthorVoice(
+    name="Dr. Seuss",
+    genre="Children",
+    style=("Bouncy anapestic rhyme with tight, predictable meter (cat-in-the-hat clap). "
+           "Invented creatures, nonsense compound words, and repeated refrains. "
+           "Short lines, big sound words, gentle moral payoff."),
+    donts=("Long descriptive paragraphs; grim or frightening imagery; "
+           "complicated subordinate clauses; adult irony."),
+    exemplar=("Not here. Not there. Not ANYWHERE! "
+              "He did not like them. Not ANYWHERE!"),
+    visual_style=("Whimsical Dr. Seuss storybook art: bold black ink outlines, "
+                  "flat bright candy colors, surreal wobbly architecture, googly "
+                  "cartoon creatures, lots of white space, no photorealism."),
+)
+
+ROALD_DAHL = AuthorVoice(
+    name="Roald Dahl",
+    genre="Children",
+    style=("Mischievous, slightly subversive third-person with a winking narrator. "
+           "Grottible invented words, gleeful villains, and small heroes who win by wit. "
+           "Comic exaggeration and playful grossness."),
+    donts=("Sentimental mush; talking down to the reader; flat good-versus-evil; "
+           "polite, watery prose."),
+    exemplar=("The witching hour, or thereabouts. The small boy sat quite still and "
+              "watched the great trunk of the peach tremble, ever so slightly, in the dark."),
+    visual_style=("Roald Dahl storybook art (Quentin Blake style): scratchy loose ink "
+                  "linework, cross-hatched shading, exaggerated cartoon faces, "
+                  "mischievous energy, muted paper tones with occasional bright accents."),
+)
+
+BEATRIX_POTTER = AuthorVoice(
+    name="Beatrix Potter",
+    genre="Children",
+    style=("Quiet, precise, affectionate prose about small animals in bonnets and gardens. "
+           "Soft period diction, gentle repetition, tidy cause-and-effect. "
+           "Illustrative detail; reassuring close."),
+    donts=("Scary peril; modern slang; sprawling plots; loud comedy."),
+    exemplar=("Once upon a time there was a very small rabbit named Peter, who lived "
+              "with his mother under the root of a very big fir tree."),
+    visual_style=("Beatrix Potter storybook art: soft watercolor, fine pen detail, "
+                  "gentle anthropomorphic animals in bonnets, muted English cottage "
+                  "palette, delicate and nostalgic."),
+)
+
+A_A_MILNE = AuthorVoice(
+    name="A. A. Milne",
+    genre="Children",
+    style=("Tender, conversational voice as if chatting with a small child. "
+           "Winnie-the-Pooh whimsy, gentle absurdity, cozy routines in the Hundred Acre Wood. "
+           "Short, cuddle-close sentences."),
+    donts=("Harsh conflict; clever-for-adults cynicism; action spectacle; "
+           "long explanations."),
+    exemplar=("Pooh was walking round and round his Thought, and Christopher Robin was "
+              "waiting patiently for him to finish it, because that is what friends do."),
+    visual_style=("A. A. Milne / E. H. Shepard storybook art: warm pencil-and-wash "
+                  "illustration, soft honey tones, cozy Hundred Acre Wood, gentle "
+                  "round characters, hand-drawn charm."),
+)
+
+E_B_WHITE = AuthorVoice(
+    name="E. B. White",
+    genre="Children",
+    style=("Graceful, warm, understated prose with calm wonder (Charlotte's Web). "
+           "Clear sentences, tender observation of animals and barn life, quiet courage. "
+           "Sincerity without sentimentality."),
+    donts=("Cutesy baby talk; heavy-handed lessons; frenetic pacing; "
+           "cynicism."),
+    exemplar=("It was a bright, cold day in April, and the world outside the barn was "
+              "soft with the promise of spring, though the wind still carried a little winter."),
+    visual_style=("E. B. White / Garth Williams storybook art: tender realistic "
+                  "pencil-and-ink farm animals, warm pastoral light, gentle and sincere, "
+                  "classic mid-century children's book look."),
+)
+
+SHEL_SILVERSTEIN = AuthorVoice(
+    name="Shel Silverstein",
+    genre="Children",
+    style=("Wry, deadpan free-verse with a kid's-eye logic and a twist ending. "
+           "Playful rhyme when it rhymes, plain talk when it doesn't. "
+           "Sly, a little poignant, never preachy."),
+    donts=("Stiff meter; moralizing; fussy description; "
+           "grown-up abstractions."),
+    exemplar=("So the tree stood there, and the boy came back, and neither one of them "
+              "said the thing they meant, but both of them understood."),
+    visual_style=("Shel Silverstein storybook art: minimalist black ink line drawings on "
+                  "plain white, loose wobbly hand-drawn cartoon figures, deadpan and "
+                  "sparse, no shading or color."),
+)
+
+
 # ---------- Registry: by genre -> AuthorVoice ----------
 
 AUTHORS_BY_GENRE = {
     "Fantasy": [WEIS_HICKMAN, SALVATORE, BRANDON_SANDERSON, PATRICK_ROTHFUSS, LE_GUIN,
                 TOLKIEN, ROBIN_HOBB, NEIL_GAIMAN, NAOMI_NOVIK, SUSANNA_CLARKE, TAD_WILLIAMS],
     "Sci-Fi": [ASIMOV, BUJOLD, LE_GUIN_SCIFI, HEINLEIN, CLARKE, VERNE,
-               PHILIP_K_DICK, WILLIAM_GIBSON, URSULA_LE_GUIN_SCIFI, OCTAVIA_BUTLER,
+               PHILIP_K_DICK, WILLIAM_GIBSON, OCTAVIA_BUTLER,
                BECKY_CHAMBERS, ANN_LECKIE, LIU_CIXIN, ANDY_WEIR],
     "Horror": [STEPHEN_KING, SHIRLEY_JACKSON, LOVECRAFT, DANIEL_HANDLER, THOMAS_LIGOTTI, CLIVE_BARKER],
     "Mystery": [AGATHA_CHRISTIE, ARTHUR_CONAN_DOYLE, SUE_GRAFTON, RAYMOND_CHANDLER, TANA_FRENCH],
@@ -510,6 +598,7 @@ AUTHORS_BY_GENRE = {
     "Drama": [BUJOLD, LE_GUIN, SHIRLEY_JACKSON],
     "Thriller": [CORNELL_WOOLRICH, STEPHEN_KING, HEINLEIN, CLARKE, LE_GUIN_SCIFI],
     "Literary": [Kazuo_ISHIGURO, TONI_MORRISON, HARUKI_MURAKAMI],
+    "Children": [DR_SEUSS, ROALD_DAHL, BEATRIX_POTTER, A_A_MILNE, E_B_WHITE, SHEL_SILVERSTEIN],
 }
 
 
@@ -525,8 +614,74 @@ DEFAULT_PROSE = AuthorVoice(
     donts="Cliché adverbs ('suddenly,' 'merely'), invented words, "
           "fragmented one-sentence paragraphs without purpose.",
     exemplar=("The door closed behind him and the corridor, at last, was quiet. The torch "
-              "he carried threw long shadows that he did not want to look at."),
+               "he carried threw long shadows that he did not want to look at."),
+    visual_style="Clean, modern book illustration with clear readable shapes and a "
+                  "contemporary palette.",
 )
+
+
+def _fetch_wikipedia(name: str) -> str:
+    """Best-effort fetch of a freely licensed Wikipedia summary (no key)."""
+    try:
+        url = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
+                + urllib.parse.quote(name))
+        r = requests.get(url, timeout=15,
+                         headers={"User-Agent": "auto-book-generator/1.0"})
+        if r.status_code == 200:
+            return (r.json().get("extract") or "")[:2000]
+    except Exception:
+        pass
+    return ""
+
+
+def research_author_voice(name: str, llm_fn=None) -> Optional[AuthorVoice]:
+    """Research an author online and derive an AuthorVoice card.
+
+    ``llm_fn`` is a callable ``(prompt: str) -> str`` backed by a text LLM
+    (the GUI wires this to its text router). If unavailable, returns None.
+    Uses a freely licensed Wikipedia summary plus the model's knowledge, then
+    asks the model to extract style / donts / exemplar / visual_style as JSON.
+    """
+    if not name or not llm_fn:
+        return None
+
+    wiki = _fetch_wikipedia(name)
+    ctx = f"Author under study: {name}.\n"
+    if wiki:
+        ctx += "Freely available Wikipedia summary:\n" + wiki + "\n"
+    ctx += "Also draw on your general knowledge of this author's work."
+
+    prompt = (
+        "You are a literary analyst. From the context, build a voice card for the "
+        f'author "{name}" as STRICT JSON only (no prose, no markdown fences):\n'
+        '{"style": "", "donts": "", "exemplar": "", "visual_style": ""}\n'
+        "style: 1-2 sentences describing their prose style.\n"
+        "donts: what the imitation should avoid.\n"
+        "exemplar: 1-2 sentences written in their voice.\n"
+        "visual_style: art-direction hint so illustrations match their books.\n"
+        f"Context:\n{ctx}"
+    )
+    try:
+        out = llm_fn(prompt)
+    except Exception:
+        return None
+
+    m = re.search(r"\{.*\}", out, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return None
+
+    return AuthorVoice(
+        name=name,
+        genre="*",
+        style=str(data.get("style", "")).strip(),
+        donts=str(data.get("donts", "")).strip(),
+        exemplar=str(data.get("exemplar", "")).strip(),
+        visual_style=str(data.get("visual_style", "")).strip(),
+    )
 
 
 def get_author_voice(author_name: str, genre: str) -> AuthorVoice:

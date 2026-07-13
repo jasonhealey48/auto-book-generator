@@ -1,33 +1,27 @@
+# Debug / probe / scratch scripts (not part of the app)
+_runtest.py
+audit_book.py
+book_generator_new.py
+debug_check.py
+debug_check2.py
+desktop_streamer.py
+fix_base.py
+fix_base_screen.py
+fix_syntax2.py
+generate_book_generator.py
+probe_*.py
+check_*.py
+check.css
+
+# Python caches
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-*.egg-info/
-dist/
-build/
-*.spec
+
+# Env / secrets
+.env
+.venv/
+venv/
+
+# Logs / usage
 *.log
-*.txt
-!README.md
-Generated_Books/
-saves/
-.opencode/
-ai_manager/
-ai_manager_backup/
-assets/
-dnd/
-lang/
-old-broken-js/
-saves/
-bot_config.json
-bot.log
-bgEEEffects.dat
-book_config.json
-book_project.json
-crypto_bot_pro.py
-crypto_bot.py
-EEKeeper.exe
-eekeeper.ini
-pixelate.bat
-TODO.md
+llm_usage.jsonl

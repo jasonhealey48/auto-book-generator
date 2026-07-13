@@ -5,16 +5,18 @@ Providers:
 - Pollinations       (free, no key required — fast GET)
 - Stable Horde       (community GPUs, async, needs free registered key)
 - HFSpace            (Hugging Face Gradio space — experimental)
-- Google Nano Banana (Google Gemini API — needs API key, uses Cloud credits)
+- Google Nano Banana (Vertex AI — uses $300 Cloud credits, cheapest option)
 """
 
 import os
+import sys
 import time
 import json
 import base64
+import subprocess
 import urllib.parse
 import requests
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 
 
@@ -65,6 +67,23 @@ class ImageProvider:
 
 
 # ---------------------------------------------------------------------------
+# Shared quality directives (kept short to fit Pollinations' 300-char prompt cap)
+# ---------------------------------------------------------------------------
+
+# Positive boosters that steer toward clean, coherent illustration.
+IMAGE_QUALITY_SUFFIX = (
+    "masterpiece, best quality, highly detailed, sharp focus, "
+    "anatomically correct hands and face, symmetrical face, "
+    "no extra limbs, no deformed features"
+)
+# Negative prompt sent separately (does not count against the 300-char cap).
+IMAGE_NEGATIVE = (
+    "deformed hands, extra fingers, mutated hands, bad anatomy, "
+    "asymmetrical face, extra limbs, missing limbs, blurred, "
+    "low quality, jpeg artifacts, watermark, signature, text, words"
+)
+
+# ---------------------------------------------------------------------------
 # Pollinations image (free, keyless GET)
 # ---------------------------------------------------------------------------
 
@@ -74,18 +93,25 @@ class PollinationsImageProvider(ImageProvider):
     DEFAULT_MODEL = "flux"
 
     def generate(self, prompt: str, negative: str = "",
-                 width: int = 512, height: int = 512,
+                 width: int = 1024, height: int = 1024,
                  filename_hint: str = "") -> ImageResult:
         safe = self._safe_name(filename_hint, prompt)
         local = os.path.join(self.save_dir,
                              f"poll_{safe}_{int(time.time()*1000) % 100000}.jpg")
 
+        # Default to the shared negative unless the caller overrides it.
+        if not negative:
+            negative = IMAGE_NEGATIVE
+
+        # Append the positive quality boosters (kept inside the 300-char cap).
+        boosted = (prompt.rstrip() + ", " + IMAGE_QUALITY_SUFFIX)[:300]
+
         params = [f"width={width}", f"height={height}", "nologo=true",
-                  "model=" + urllib.parse.quote(self.model or "flux")]
+                  "enhance=true", "model=" + urllib.parse.quote(self.model or "flux")]
         if negative:
             params.append("negative_prompt=" + urllib.parse.quote(negative))
         url = ("https://image.pollinations.ai/prompt/"
-               + urllib.parse.quote(prompt[:300])
+               + urllib.parse.quote(boosted)
                + "?" + "&".join(params))
 
         t0 = time.time()
@@ -124,8 +150,12 @@ class StableHordeImageProvider(ImageProvider):
         local = os.path.join(self.save_dir,
                              f"horde_{safe}_{int(time.time()*1000) % 100000}.png")
 
+        if not negative:
+            negative = IMAGE_NEGATIVE
+        full_prompt = (prompt.rstrip() + ", " + IMAGE_QUALITY_SUFFIX)[:400]
+
         payload = {
-            "prompt": prompt,
+            "prompt": full_prompt,
             "params": {
                 "sampler_name": "k_dpmpp_2m",
                 "cfg_scale": 7.5,
@@ -253,47 +283,140 @@ class HFSpaceImageProvider(ImageProvider):
 # ---------------------------------------------------------------------------
 
 NANO_BANANA_MODELS = {
-    "gemini-3.1-flash-lite-image": "Nano Banana 2 Lite (fastest, cheapest)",
-    "gemini-3.1-flash-image": "Nano Banana 2 (best balance)",
-    "gemini-2.5-flash-image": "Nano Banana (original)",
-    "gemini-3-pro-image": "Nano Banana Pro (highest quality)",
+    "gemini-2.5-flash-image": "Nano Banana ($0.039/img — cheapest)",
+    "gemini-3.1-flash-lite-image": "Nano Banana 2 Lite ($0.067/img — fastest)",
+    "gemini-3.1-flash-image": "Nano Banana 2 ($0.067/img — best balance)",
 }
 
 
+def _get_vertex_ai_token() -> Optional[str]:
+    """Get a Bearer token from gcloud ADC credentials."""
+    # Try ADC file first — exchange refresh_token for access_token
+    if sys.platform == "win32":
+        adc_paths = [
+            os.path.join(os.environ.get("APPDATA", ""), "gcloud",
+                         "application_default_credentials.json"),
+            os.path.join(os.environ.get("USERPROFILE", ""), ".config",
+                         "gcloud", "application_default_credentials.json"),
+        ]
+    else:
+        adc_paths = [
+            os.path.expanduser("~/.config/gcloud/application_default_credentials.json"),
+        ]
+    for p in adc_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    data = json.load(f)
+                refresh_token = data.get("refresh_token")
+                client_id = data.get("client_id")
+                client_secret = data.get("client_secret")
+                if refresh_token and client_id and client_secret:
+                    r = requests.post(
+                        "https://oauth2.googleapis.com/token",
+                        data={
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "refresh_token": refresh_token,
+                            "grant_type": "refresh_token",
+                        },
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        return r.json().get("access_token")
+                # Fallback: check if there's a cached access_token
+                token = data.get("token") or data.get("access_token")
+                if token:
+                    return token
+            except Exception:
+                pass
+
+    # Try gcloud CLI
+    try:
+        r = subprocess.run(
+            ["gcloud", "auth", "print-access-token"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        token = r.stdout.strip()
+        if token and r.returncode == 0:
+            return token
+    except Exception:
+        pass
+
+    return None
+
+
 class GoogleNanoBananaProvider(ImageProvider):
-    """Google Nano Banana via Gemini API — uses same API key as text."""
+    """Google Nano Banana via Vertex AI — uses $300 Cloud credits (cheapest option)."""
     name = "Google Nano Banana"
     requires_key = True
-    DEFAULT_MODEL = "gemini-3.1-flash-lite-image"
+    DEFAULT_MODEL = "gemini-2.5-flash-image"
 
     def __init__(self, api_key: str = "", model: str = "",
-                 save_dir: str = "Generated_Books/images"):
+                 save_dir: str = "Generated_Books/images",
+                 use_vertex_ai: bool = True, vertex_project_id: str = "",
+                 vertex_location: str = "us-central1"):
         super().__init__(api_key=api_key, model=model or self.DEFAULT_MODEL, save_dir=save_dir)
-        self.DEFAULT_MODEL = "gemini-3.1-flash-lite-image"
+        self.DEFAULT_MODEL = "gemini-2.5-flash-image"
+        self.use_vertex_ai = use_vertex_ai
+        self.vertex_project_id = vertex_project_id
+        self.vertex_location = vertex_location or "us-central1"
+        self._vertex_token: Optional[str] = None
+        self._vertex_token_ts: float = 0
 
     def is_available(self) -> bool:
+        if self.use_vertex_ai:
+            return bool(self.vertex_project_id)
         return bool(self.api_key)
+
+    def _get_auth(self) -> Dict[str, str]:
+        """Return headers for the chosen auth method."""
+        if self.use_vertex_ai:
+            now = time.time()
+            if not self._vertex_token or (now - self._vertex_token_ts) > 2400:
+                self._vertex_token = _get_vertex_ai_token()
+                self._vertex_token_ts = now
+            if not self._vertex_token:
+                return {}
+            return {"Authorization": f"Bearer {self._vertex_token}"}
+        return {"x-goog-api-key": self.api_key}
+
+    def _get_url(self, model: str) -> str:
+        if self.use_vertex_ai:
+            loc = self.vertex_location or "us-central1"
+            proj = self.vertex_project_id
+            return (f"https://{loc}-aiplatform.googleapis.com/v1/"
+                    f"projects/{proj}/locations/{loc}/"
+                    f"publishers/google/models/{model}:generateContent")
+        return (f"https://generativelanguage.googleapis.com/v1beta/"
+                f"models/{model}:generateContent")
 
     def generate(self, prompt: str, negative: str = "",
                  width: int = 512, height: int = 512,
                  filename_hint: str = "") -> ImageResult:
-        if not self.api_key:
-            return ImageResult("", "", 0, self.model, ok=False, error="missing API key")
+        if self.use_vertex_ai and not self.vertex_project_id:
+            return ImageResult("", "", 0, self.model, ok=False,
+                               error="missing Vertex AI project ID")
+        if not self.use_vertex_ai and not self.api_key:
+            return ImageResult("", "", 0, self.model, ok=False,
+                               error="missing API key")
 
         safe = self._safe_name(filename_hint, prompt)
         local = os.path.join(self.save_dir,
                              f"nano_{safe}_{int(time.time()*1000) % 100000}.png")
 
         model = self.model or self.DEFAULT_MODEL
-        url = (f"https://generativelanguage.googleapis.com/v1beta/"
-               f"models/{model}:generateContent")
+        url = self._get_url(model)
 
-        full_prompt = prompt
+        if not negative:
+            negative = IMAGE_NEGATIVE
+        full_prompt = prompt.rstrip() + ", " + IMAGE_QUALITY_SUFFIX
         if negative:
             full_prompt += f"\nAvoid: {negative}"
 
         payload = {
-            "contents": [{"parts": [{"text": full_prompt}]}],
+            "contents": [{"role": "user", "parts": [{"text": full_prompt}]}],
             "generationConfig": {
                 "responseModalities": ["TEXT", "IMAGE"],
             },
@@ -305,7 +428,7 @@ class GoogleNanoBananaProvider(ImageProvider):
                 url,
                 headers={
                     "Content-Type": "application/json",
-                    "x-goog-api-key": self.api_key,
+                    **self._get_auth(),
                 },
                 json=payload,
                 timeout=120,
@@ -356,22 +479,23 @@ class GoogleNanoBananaProvider(ImageProvider):
         return ImageResult(local, "", ms, self.model, ok=True)
 
     def probe_latency(self) -> int:
-        if not self.api_key:
+        if self.use_vertex_ai and not self.vertex_project_id:
+            return 99999
+        if not self.use_vertex_ai and not self.api_key:
             return 99999
         try:
             t0 = time.time()
             model = self.model or self.DEFAULT_MODEL
-            url = (f"https://generativelanguage.googleapis.com/v1beta/"
-                   f"models/{model}:generateContent")
+            url = self._get_url(model)
             payload = {
-                "contents": [{"parts": [{"text": "Generate a tiny red dot"}]}],
+                "contents": [{"role": "user", "parts": [{"text": "Generate a tiny red dot"}]}],
                 "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
             }
             r = requests.post(
                 url,
                 headers={
                     "Content-Type": "application/json",
-                    "x-goog-api-key": self.api_key,
+                    **self._get_auth(),
                 },
                 json=payload,
                 timeout=30,
@@ -386,7 +510,9 @@ class GoogleNanoBananaProvider(ImageProvider):
 # ---------------------------------------------------------------------------
 
 def make_image_provider(name: str, api_key: str = "", model: str = "",
-                         save_dir: str = "Generated_Books/images") -> ImageProvider:
+                         save_dir: str = "Generated_Books/images",
+                         use_vertex_ai: bool = True, vertex_project_id: str = "",
+                         vertex_location: str = "us-central1") -> ImageProvider:
     n = name.lower()
     if n in ("pollinations", "pollinations (free)"):
         return PollinationsImageProvider(api_key, model, save_dir)
@@ -395,7 +521,10 @@ def make_image_provider(name: str, api_key: str = "", model: str = "",
     if n in ("hfspace", "huggingface_space", "huggingface", "hf"):
         return HFSpaceImageProvider(api_key, model, save_dir)
     if n in ("google nano banana", "nano banana", "google", "nano_banana"):
-        return GoogleNanoBananaProvider(api_key, model, save_dir)
+        return GoogleNanoBananaProvider(api_key, model, save_dir,
+                                         use_vertex_ai=use_vertex_ai,
+                                         vertex_project_id=vertex_project_id,
+                                         vertex_location=vertex_location)
     raise ValueError(f"Unknown image provider: {name}")
 
 
@@ -406,6 +535,9 @@ class ImageProviderConfig:
     model: str = ""
     enabled: bool = True
     priority: int = 0
+    use_vertex_ai: bool = True
+    vertex_project_id: str = ""
+    vertex_location: str = "us-central1"
 
 
 class ImageRouter:
@@ -416,7 +548,10 @@ class ImageRouter:
         self.latency_ms: Dict[str, int] = {}
 
     def _build(self, cfg: ImageProviderConfig) -> ImageProvider:
-        return make_image_provider(cfg.name, cfg.api_key, cfg.model, self.save_dir)
+        return make_image_provider(cfg.name, cfg.api_key, cfg.model, self.save_dir,
+                                   use_vertex_ai=cfg.use_vertex_ai,
+                                   vertex_project_id=cfg.vertex_project_id,
+                                   vertex_location=cfg.vertex_location)
 
     def _available(self) -> List[ImageProviderConfig]:
         out = []

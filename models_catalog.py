@@ -158,11 +158,11 @@ def fetch_huggingface_models(api_key: str = "") -> List[ModelInfo]:
 # ---------------------------------------------------------------------------
 
 GOOGLE_FREE_MODELS = [
-    ModelInfo("gemini-2.0-flash", "Gemini 2.0 Flash", "recommended, free tier"),
+    ModelInfo("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", "latest, free tier"),
+    ModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", "free tier"),
+    ModelInfo("gemini-2.0-flash", "Gemini 2.0 Flash", "free tier"),
     ModelInfo("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite", "fastest, free tier"),
     ModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", "free tier"),
-    ModelInfo("gemini-1.5-flash-8b", "Gemini 1.5 Flash 8B", "smaller, faster"),
-    ModelInfo("gemini-2.5-flash-preview-04-17", "Gemini 2.5 Flash Preview", "preview, free"),
 ]
 
 

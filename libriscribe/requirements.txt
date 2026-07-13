@@ -1,0 +1,17 @@
+# libriscribe/requirements.txt
+typer
+openai
+python-dotenv
+pydantic
+pydantic-settings
+pyyaml
+beautifulsoup4
+requests
+markdown
+fpdf # For PDF generation
+anthropic
+google-genai>=2.7.0
+requests
+tenacity
+rich
+pick
