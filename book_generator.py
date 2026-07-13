@@ -50,8 +50,26 @@ PROJECT_FILE = "book_project.json"
 
 AUDIENCES = ["Children", "Middle Grade", "Young Adult", "Adult", "All Ages"]
 GENRES = ["Fantasy", "Sci-Fi", "Horror", "Mystery", "Romance",
-          "Adventure", "Comedy", "Drama", "Thriller", "Literary", "Graphic Novel",
-          "Graphic Novel"]
+          "Adventure", "Comedy", "Drama", "Thriller", "Literary", "Graphic Novel"]
+
+
+def _is_graphic(genre) -> bool:
+    """True when 'Graphic Novel' is among the (possibly comma-joined) genres."""
+    return bool(genre) and any(
+        g.strip().lower() == "graphic novel" for g in str(genre).split(",")
+    )
+
+
+def _genre_guidance(genre_str) -> str:
+    """Join GENRE_GUIDANCE for every genre in a (possibly comma-joined) string."""
+    parts = []
+    for g in str(genre_str or "").split(","):
+        g = g.strip()
+        if g:
+            v = GENRE_GUIDANCE.get(g)
+            if v:
+                parts.append(v)
+    return " ".join(parts)
 
 AUDIENCE_GUIDANCE = {
     "Children": ("Picture-book ages 5-9. Warm, conversational voice. Short sentences (6-10 words). Concrete nouns/verbs. ONE scene per page. End on a small hook."),
@@ -81,7 +99,7 @@ GENRE_GUIDANCE = {
 _HOVER_DESCRIPTIONS = {
     "theme_edit": ("Theme", "The emotional idea your book explores (e.g. friendship, courage). Shapes plot and tone."),
     "setting_edit": ("Setting", "Where/when the story happens (e.g. a magical forest kingdom). Grounds the world."),
-    "genre_combo": ("Genre", "Story category. Picks the right outline shape and which author voices are offered."),
+    "genre_list": ("Genres", "Pick one or more (e.g. Graphic Novel + Fantasy). Graphic Novel is a visual format layered on any story genre."),
     "audience_combo": ("Audience", "Target reader age. Drives sentence length, peril level, and the voice directive sent to every agent."),
     "author_combo": ("Author Voice", "The prose style to imitate. Changing it rewrites how ALL chapters sound."),
     "author_search": ("Research Author", "Type any author's name and hit 'Analyze Author' to build a custom voice card from web + model knowledge."),
@@ -213,7 +231,7 @@ def _generate_outline(settings, router) -> list:
     author = get_author_voice(author_name, genre)
     num_pages = s['num_pages']
     aud_guide = AUDIENCE_GUIDANCE.get(audience, '')
-    gen_guide = GENRE_GUIDANCE.get(genre, '')
+    gen_guide = _genre_guidance(genre)
 
     prompt = f'You are planning a {audience} {genre} book.'
     prompt += f' AUDIENCE: {aud_guide}'
@@ -442,7 +460,7 @@ class EngineGenerationWorker(QRunnable):
             return
 
         genre = book.get('metadata', {}).get('genre', self.settings.get('genre', ''))
-        if genre == 'Graphic Novel':
+        if _is_graphic(genre):
             self._generate_graphic_novel(book)
             return
 
@@ -536,6 +554,49 @@ class EngineGenerationWorker(QRunnable):
             "narrator": str(d.get("narrator", "")),
         }
 
+    def _parse_panel_script_text(self, raw: str) -> Dict:
+        """Parse an already-written panel script (the [Panel N] / VISUAL: /
+        NARRATION: / DIALOGUE: markdown the chapter writer emits) into the
+        same {panels, dialogue, narrator} shape as _parse_gn_script.
+
+        This lets the graphic image stage use the REAL chapter text instead of
+        re-deriving a script from it (which is what produced images before
+        the chapter text was ready).
+        """
+        import re
+        panels, dialogue, narrator_parts = [], [], []
+        for blk in re.split(r"\[Panel\s*\d+\]", raw or ""):
+            blk = blk.strip()
+            if not blk:
+                continue
+            vis = ""
+            m = re.search(r"VISUAL:\s*(.*?)(?=NARRATION:|DIALOGUE:|$)",
+                          blk, re.DOTALL | re.IGNORECASE)
+            if m:
+                vis = m.group(1).strip()
+            nar = ""
+            m = re.search(r"NARRATION:\s*(.*?)(?=DIALOGUE:|$)",
+                          blk, re.DOTALL | re.IGNORECASE)
+            if m:
+                nar = m.group(1).strip()
+            dlg = []
+            m = re.search(r"DIALOGUE:\s*(.*)$", blk, re.DOTALL | re.IGNORECASE)
+            if m:
+                for line in m.group(1).splitlines():
+                    line = line.strip()
+                    if line:
+                        dlg.append(line)
+            if vis:
+                panels.append({"desc": vis})
+            if nar:
+                narrator_parts.append(nar)
+            dialogue.extend(dlg)
+        return {
+            "panels": panels,
+            "dialogue": dialogue,
+            "narrator": " ".join(narrator_parts),
+        }
+
     def _draw_text_wrapped(self, draw, xy, text, font, max_w, fill):
         """Draw text wrapped to max_w px, returning the y just below it."""
         import textwrap
@@ -614,17 +675,29 @@ class EngineGenerationWorker(QRunnable):
             if self._cancelled:
                 raise RuntimeError("Generation cancelled")
             self.signals.progress.emit(f"Graphic novel page {idx+1}/{len(pages)}...")
-            prose = page.get("text", "")
 
-            # 1) Convert prose -> graphic-novel panel script (cuts the prose)
-            script_prompt = (
-                f"You are a comic-book scriptwriter. Turn the scene into a "
-                f"{genre} graphic-novel page. Output STRICT JSON only:\n"
-                '{"panels":[{"desc":"visual description, no text"}], '
-                '"dialogue":["short line","short line"], "narrator":"one short caption"}\n'
-                "Keep each dialogue line <=12 words. Scene:\n" + prose[:700]
-            )
-            script = self._parse_gn_script(self._llm_text(script_prompt))
+            # The chapter text MUST exist before we can draw anything.
+            prose = (page.get("text", "") or "").strip()
+            if not prose:
+                self.signals.progress.emit(
+                    f"Skip page {idx+1}: chapter text not available yet")
+                continue
+
+            # 1) Get the panel script. If the chapter text is ALREADY a
+            #    panel script (engine path), use it directly. Otherwise
+            #    derive one from the prose via the LLM (legacy path).
+            is_script = bool(re.search(r"\[Panel|VISUAL:", prose, re.IGNORECASE))
+            if is_script:
+                script = self._parse_panel_script_text(prose)
+            else:
+                script_prompt = (
+                    f"You are a comic-book scriptwriter. Turn the scene into a "
+                    f"{genre} graphic-novel page. Output STRICT JSON only:\n"
+                    '{"panels":[{"desc":"visual description, no text"}], '
+                    '"dialogue":["short line","short line"], "narrator":"one short caption"}\n'
+                    "Keep each dialogue line <=12 words. Scene:\n" + prose[:700]
+                )
+                script = self._parse_gn_script(self._llm_text(script_prompt))
 
             # 2) Spill the panel descriptions into the image generator
             panel_desc = " | ".join(
@@ -641,18 +714,21 @@ class EngineGenerationWorker(QRunnable):
                 continue
             img_path = res.path
 
-            # 3) Editor fills in the bubble dialogue + narrator voice
-            edit_prompt = (
-                f"For this {genre} graphic novel panel, write the FINAL speech-bubble "
-                f"lines and a narrator caption. STRICT JSON only:\n"
-                '{"dialogue":["line","line"], "narrator":"caption"}\n'
-                "Panels depicted: " + panel_desc[:300]
-            )
-            edited = self._parse_gn_script(self._llm_text(edit_prompt))
-            if edited.get("dialogue"):
-                script["dialogue"] = edited["dialogue"]
-            if edited.get("narrator"):
-                script["narrator"] = edited["narrator"]
+            # 3) If we derived the script via LLM, let the editor refine the
+            #    bubble dialogue + narrator voice. When the script came
+            #    straight from the chapter text, keep that wording.
+            if not is_script:
+                edit_prompt = (
+                    f"For this {genre} graphic novel panel, write the FINAL speech-bubble "
+                    f"lines and a narrator caption. STRICT JSON only:\n"
+                    '{"dialogue":["line","line"], "narrator":"caption"}\n'
+                    "Panels depicted: " + panel_desc[:300]
+                )
+                edited = self._parse_gn_script(self._llm_text(edit_prompt))
+                if edited.get("dialogue"):
+                    script["dialogue"] = edited["dialogue"]
+                if edited.get("narrator"):
+                    script["narrator"] = edited["narrator"]
 
             # 4) Lettering: composite bubbles + caption onto the art
             lettered = self._letter_gn_image(img_path, script)
@@ -708,7 +784,7 @@ class GenerationWorker(QRunnable):
         img_interval = max(1, int(s.get('img_interval', 5)))
         style_phrase = s.get('style_phrase', '')
         aud_guide = AUDIENCE_GUIDANCE.get(audience, '')
-        gen_guide = GENRE_GUIDANCE.get(genre, '')
+        gen_guide = _genre_guidance(genre)
 
         self.signals.progress.emit('Phase 1/4: Generating full book JSON...')
         book = generate_full_book_json(s, self.router)
@@ -1206,7 +1282,7 @@ class BookGeneratorApp(QMainWindow):
         for w, name in [
             (self.theme_edit, 'theme_edit'),
             (self.setting_edit, 'setting_edit'),
-            (self.genre_combo, 'genre_combo'),
+            (self.genre_list, 'genre_list'),
             (self.audience_combo, 'audience_combo'),
             (self.author_combo, 'author_combo'),
             (self.pages_spin, 'pages_spin'),
@@ -1648,22 +1724,28 @@ class BookGeneratorApp(QMainWindow):
         self.setting_edit = QLineEdit()
         self.setting_edit.setPlaceholderText('e.g., a magical forest kingdom')
         bg_layout.addRow('Setting:', self.setting_edit)
-        self.genre_combo = QComboBox()
-        self.genre_combo.addItems(GENRES)
-        bg_layout.addRow('Genre:', self.genre_combo)
+        self.genre_list = QListWidget()
+        self.genre_list.setObjectName('genre_list')
+        self.genre_list.setFixedHeight(96)
+        for _g in GENRES:
+            _it = QListWidgetItem(_g)
+            _it.setFlags(_it.flags() | Qt.ItemIsUserCheckable)
+            _it.setCheckState(Qt.Checked if _g == "Fantasy" else Qt.Unchecked)
+            self.genre_list.addItem(_it)
+        self.genre_list.itemChanged.connect(
+            lambda *_: self._populate_authors_for_genre(self.selected_genres(), self.audience_combo.currentText()))
+        bg_layout.addRow('Genre(s):', self.genre_list)
         self.audience_combo = QComboBox()
         self.audience_combo.addItems(AUDIENCES)
         bg_layout.addRow('Audience:', self.audience_combo)
         self.author_combo = QComboBox()
         self.author_combo.setObjectName('author_combo')
         self._author_voice_cache: Dict[str, 'AuthorVoice'] = {}
-        self._populate_authors_for_genre(self.genre_combo.currentText(),
+        self._populate_authors_for_genre(self.selected_genres(),
                                          self.audience_combo.currentText())
         bg_layout.addRow('Author Voice:', self.author_combo)
-        self.genre_combo.currentTextChanged.connect(
-            lambda g: self._populate_authors_for_genre(g, self.audience_combo.currentText()))
         self.audience_combo.currentTextChanged.connect(
-            lambda a: self._populate_authors_for_genre(self.genre_combo.currentText(), a))
+            lambda a: self._populate_authors_for_genre(self.selected_genres(), a))
 
         # --- Research any author online -> build a runtime voice card ---
         search_row = QHBoxLayout()
@@ -2234,6 +2316,22 @@ class BookGeneratorApp(QMainWindow):
         else:
             QMessageBox.warning(self, 'Not Found', f'{CONFIG_FILE} does not exist.')
 
+    def selected_genres(self) -> str:
+        """Return the checked genres as a comma-joined string (e.g. 'Graphic Novel, Fantasy')."""
+        out = []
+        for i in range(self.genre_list.count()):
+            it = self.genre_list.item(i)
+            if it.checkState() == Qt.Checked:
+                out.append(it.text())
+        return ", ".join(out)
+
+    def _set_genres(self, genre_str: str):
+        """Check the list items that match a stored genre string (single or comma-joined)."""
+        wanted = {g.strip().lower() for g in str(genre_str or "").split(",") if g.strip()}
+        for i in range(self.genre_list.count()):
+            it = self.genre_list.item(i)
+            it.setCheckState(Qt.Checked if it.text().lower() in wanted else Qt.Unchecked)
+
     def _populate_authors_for_genre(self, genre: str, audience: str):
         """Rebuild the author voice dropdown.
 
@@ -2272,7 +2370,7 @@ class BookGeneratorApp(QMainWindow):
         return {
             'theme': self.theme_edit.text(),
             'setting': self.setting_edit.text(),
-            'genre': self.genre_combo.currentText(),
+            'genre': self.selected_genres(),
             'audience': self.audience_combo.currentText(),
             'author_voice': self.author_combo.currentText(),
             'num_pages': self.pages_spin.value(),
@@ -2297,9 +2395,9 @@ class BookGeneratorApp(QMainWindow):
     def _apply_config(self, config: Dict):
         self.theme_edit.setText(config.get('theme', ''))
         self.setting_edit.setText(config.get('setting', ''))
-        self.genre_combo.setCurrentText(config.get('genre', 'Fantasy'))
+        self._set_genres(config.get('genre', 'Fantasy'))
         self.audience_combo.setCurrentText(config.get('audience', 'Young Adult'))
-        self._populate_authors_for_genre(self.genre_combo.currentText(),
+        self._populate_authors_for_genre(self.selected_genres(),
                                          self.audience_combo.currentText())
         self.author_combo.setCurrentText(config.get('author_voice', 'Default (Clean Prose)'))
         self.pages_spin.setValue(config.get('num_pages', 20))

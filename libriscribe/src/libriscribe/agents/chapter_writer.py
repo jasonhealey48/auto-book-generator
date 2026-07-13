@@ -1,6 +1,13 @@
 # src/libriscribe/agents/chapter_writer.py
 
 import logging
+
+
+def _is_graphic(genre) -> bool:
+    """True when 'Graphic Novel' is among the (possibly comma-joined) genres."""
+    return bool(genre) and any(
+        g.strip().lower() == "graphic novel" for g in str(genre).split(",")
+    )
 from pathlib import Path
 from typing import Optional
 from libriscribe.agents.agent_base import Agent
@@ -79,7 +86,7 @@ class ChapterWriterAgent(Agent):
                 # Create a prompt for this specific scene
                 scene_tmpl = (
                     prompts.GRAPHIC_SCENE_PROMPT
-                    if project_knowledge_base.genre == "Graphic Novel"
+                    if _is_graphic(project_knowledge_base.genre)
                     else prompts.SCENE_PROMPT
                 )
                 scene_prompt = scene_tmpl.format(

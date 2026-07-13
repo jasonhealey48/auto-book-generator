@@ -16,6 +16,13 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _is_graphic(genre) -> bool:
+    """True when 'Graphic Novel' is among the (possibly comma-joined) genres."""
+    return bool(genre) and any(
+        g.strip().lower() == "graphic novel" for g in str(genre).split(",")
+    )
+
+
 class OutlinerAgent(Agent):
     """Generates book outlines."""
 
@@ -31,7 +38,7 @@ class OutlinerAgent(Agent):
             # Graphic Novel mode -> panel-based outline instead of prose chapters
             outline_tmpl = (
                 prompts.GRAPHIC_OUTLINE_PROMPT
-                if project_knowledge_base.genre == "Graphic Novel"
+                if _is_graphic(project_knowledge_base.genre)
                 else prompts.OUTLINE_PROMPT
             )
 
@@ -80,7 +87,7 @@ class OutlinerAgent(Agent):
                 if chapter_num <= max_chapters:  # Only process up to max_chapters
                     console.print(f"📋 Working on Chapter {chapter_num}: {chapter.title}")
                     
-                    if project_knowledge_base.genre == "Graphic Novel":
+                    if _is_graphic(project_knowledge_base.genre):
                         # Graphic Novel: each "- Panel N:" line in the chapter
                         # summary becomes a scene (a panel) directly.
                         self._panels_to_scenes(chapter)

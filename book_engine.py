@@ -15,6 +15,14 @@ from typing import Dict, Optional, Any
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
+
+def _is_graphic(genre) -> bool:
+    """True when 'Graphic Novel' is among the (possibly comma-joined) genres."""
+    return bool(genre) and any(
+        g.strip().lower() == "graphic novel" for g in str(genre).split(",")
+    )
+
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "libriscribe", "src"))
 
 from libriscribe.agents.project_manager import ProjectManagerAgent
@@ -445,7 +453,7 @@ class BookEngine(QObject):
                 chapter_text = chapter_path.read_text(encoding="utf-8").strip()
 
             if chapter_text:
-                is_graphic = self._kb.genre == "Graphic Novel"
+                is_graphic = _is_graphic(self._kb.genre)
                 if is_graphic and "[Panel" in chapter_text:
                     scene_texts = [seg.strip() for seg in chapter_text.split("[Panel") if seg.strip()]
                 else:
