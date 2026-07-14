@@ -1,8 +1,11 @@
 ## Objective
-- Merge LibriScribe multi-agent backend into PyQt5 Auto Book Generator GUI; author voice + audience drive generation end-to-end; cursor-following hover help; author visual-style in images; "Analyze Author" runtime voice research; Graphic Novel genre (panel script → art → editor lettering composite); hybrid genres (combine 2-3 genres, e.g. Graphic Novel + Fantasy); fix Pollinations text-generation returning helpdesk/meta replies; **graphic-novel exports that refuse to ship a skeleton (engine validate + retry, image retry/raise, audience-aware image directives, chapter strip + page-number badge lettered into the art, visual doctrine for cross-page character/location consistency, Pollinations dropped when Google Nano Banana is active).**
+- Merge LibriScribe multi-agent backend into PyQt5 Auto Book Generator GUI; author voice + audience drive generation end-to-end; cursor-following hover help; author visual-style in images; "Analyze Author" runtime voice research; Graphic Novel genre (panel script → art → editor lettering composite); hybrid genres (combine 2-3 genres, e.g. Graphic Novel + Fantasy); fix Pollinations text-generation returning helpdesk/meta replies; **graphic-novel exports that refuse to ship a skeleton (engine validate + retry, image retry/raise, audience-aware image directives, chapter strip + page-number badge lettered into the art, visual doctrine for cross-page character/location consistency, Pollinations dropped when Google Nano Banana is active); image-routing settings pinned to global config (not overwritten by project file); auto-launch non-blocking (no startup modal dialog blocking the main window).**
 
 ## Important Details
 - **Architecture**: `ProjectKnowledgeBase` canonical backend; legacy `book` dict canonical GUI/export; bridge = `BookEngine.to_legacy_book_json()`. TWO gen paths: (1) Engine path = `EngineGenerationWorker` → `BookEngine` (GUI default); (2) Legacy path = `GenerationWorker._run_generation` → `generate_full_book_json`. Both feed `_generate_images` (graphic → `_generate_graphic_novel`).
+- **GUI startup** — `_load_config(silent=True)` is now called on construction (was previously non-silent, blocking on a `QMessageBox.information(...)` modal so the main window never appeared). The user-facing "Load Config" button still emits the modal confirmation by passing the default `silent=False`. Result: window pops up in ~15s instead of waiting indefinitely until the user clicks an invisible dialog.
+- **Project restore pins image-routing keys** — `_restore_project` filters the project's `settings` dict before calling `_apply_config`. **Image-routing keys** (`image_provider`, `image_model`, `image_api_key`, `use_vertex_ai`, `vertex_project_id`, `vertex_location`, `text_provider`, `text_model`, `text_api_key`) are stripped — those stay sourced from `book_config.json`. **Content keys** (`theme`, `setting`, `genre`, `audience`, `author_voice`, `num_pages`, `include_images`, `image_freq`, `img_interval`, `color_style`, `style_phrase`, `review_preference`, `worldbuilding_needed`) still flow through. Verified in test: a project with stale `image_provider: "Pollinations (Free)"` no longer overwrites the global Banana.
+- **Visual doctrine strengthened** (`_build_visual_doctrine`) — emits a structured per-character + per-location anchor: `• CHARACTERS: - Name: face + hair + clothing + props + role (keep this look across every page)` and an identical structure for LOCATIONS, preceded by a strong header ("VISUAL DOCTRINE — every page MUST match this exactly. Do not vary face, hair, clothing, palette, props, scene, or composition across the book. Re-use the same character illustration verbatim unless the scene explicitly demands a change."). No new schemas; pure text-only prompt engineering.
 - **Pipeline order (engine path, `book_generator.py` `_run_generation`)**: concept → characters → worldbuilding (if enabled) → outline (informed by characters/world blocks) → chapters → `to_legacy_book_json` → [graphic-minimums gate raised if no real prose] → `_generate_images`. Characters/worldbuilding BEFORE outline (cast/world essential to outline).
 - **Hybrid genres**: Genre UI is checkable `QListWidget` (`self.genre_list`); `selected_genres()` returns comma-joined string (e.g. `"Graphic Novel, Fantasy"`); stored in `settings['genre']` / `kb.genre`. `_is_graphic(genre)` is hybrid-aware (`"Graphic Novel" in comma-split list`).
 - **Engine never exports a skeleton (Block 1)** — `book_engine.py`:
@@ -66,24 +69,25 @@
 - **Block 7 (graphic content minimums)** — `_collect_graphic_minimum_issues` rejects scaffolding pages + empty characters in graphic-novel genre.
 - **Block 8 (regression)** — 17/17 `unittest` pass; both files compile clean.
 - **Block 9 (anchor)** — this file updated.
-- **Commits on origin/main (post-Plan)**: pending single commit "Block 1-7: graphic-novel export hardening..." — pushed after this anchor update.
-- **Verification**: `py_compile` clean on `book_generator.py` + `book_engine.py`; 17/17 `python -m unittest`; smoke test of audience/doctrine/Pollinations-drop/lettering all green.
+- **v7 fix (project-restore pin)** — `_restore_project` filters `image_provider`/`image_model`/`image_api_key`/`use_vertex_ai`/`vertex_project_id`/`vertex_location`/`text_provider`/`text_model`/`text_api_key` from the project's settings before calling `_apply_config`. Content keys still flow through. Verified: stale `image_provider: "Pollinations (Free)"` in `book_project.json` never overwrites the global Banana choice.
+- **v7 visual-doctrine strengthening** — `_build_visual_doctrine` emits a structured per-character + per-location anchor with a strong header line. Pure text-only; no schemas added.
+- **v7 GUI-startup non-blocking** — `_load_config(silent=True)` is now called from construction; the modal `QMessageBox.information("Loaded", ...)` no longer fires on auto-load. User-click "Load Config" still emits the confirmation. Verified: window up after ~15 seconds instead of blocked indefinitely.
+- **Commits on origin/main**: `1b2f5dd`, `428123b`, `2608c4e`, `fa907a2`, `f8ff9bb`, `abdba90`, `765bfd1`, `8290605` — all pushed.
+- **Verification**: `py_compile` clean on `book_generator.py` + `book_engine.py`; 17/17 `python -m unittest`; smoke test of audience/doctrine/Pollinations-drop/lettering all green; GUI window up at "Auto Book Generator" with PID 10736 hwnd 3738134.
 
 ### Active
-- (none; ready for `git add` + commit + push).
+- (none; Book app ready for image generation).
 
 ### Blocked
 - (none).
 
 ## Next Move
-1. Commit: `block1-9 graphic-novel export hardening` covering Block 1–7 in `book_generator.py` + `book_engine.py` (anchored summary already updated).
-2. Push to `origin/main`.
-3. Relaunch the GUI (Vertex Banana faithful on project `gen-lang-client-0397607711`).
-4. Live Graphic Novel + Fantasy smoke test (3 chapters, Adult audience, R.A. Salvatore author) → confirm full prose, real panel dialogue, every page lettered with chapter strip + page badge.
+1. Live Graphic Novel + Fantasy smoke test (3 chapters, Adult audience, R.A. Salvatore author) → confirm full prose, real panel dialogue, every page lettered with chapter strip + page badge, image filenames prefixed `nano_` (Vertex Banana) not `poll_`.
+2. Optional: turn rector the `_letter_gn_image` narrator-bar to render UNDER the chapter strip instead of right after it (already implemented; verify visually on first live generation).
 
 ## Relevant Files
-- `C:/Users/jason/OneDrive/Desktop/bgee/book_generator.py` — GUI; engine path `_run_generation`; `EngineGenerationWorker._audience_for`, `_visual_doctrine`, `_author_art_hint`, `_load_pil_font`, `_letter_gn_image` (Block 5), `_generate_graphic_novel` (Blocks 2/4/5/6); module-level `_audience_image_directive`/`_chapter_header_enabled`/`AUDIENCE_VISUAL_GUIDANCE`/`AUDIENCE_VIOLENCE_FORBIDDEN`/`AUTHOR_CHAPTER_HEADER`; `_build_visual_doctrine`/`_drop_pollinations_when_banana_active`/`_collect_graphic_minimum_issues`; `ImageGenerationFailed` class.
-- `C:/Users/jason/OneDrive/Desktop/bgee/book_engine.py` — Bridge; `to_legacy_book_json`; `_SCAFFOLD_LOGLINE`/`_SCAFFOLD_BEATS`/`_is_real_logline`/`_is_real_beat`/`validate_real_content`/`stage_with_retry`/`ContentGenerationError`.
+- `C:/Users/jason/OneDrive/Desktop/bgee/book_generator.py` — GUI; engine path `_run_generation`; `EngineGenerationWorker._audience_for`, `_visual_doctrine`, `_author_art_hint`, `_load_pil_font`, `_letter_gn_image` (Block 5), `_generate_graphic_novel` (Blocks 2/4/5/6); module-level `_audience_image_directive`/`_chapter_header_enabled`/`AUDIENCE_VISUAL_GUIDANCE`/`AUDIENCE_VIOLENCE_FORBIDDEN`/`AUTHOR_CHAPTER_HEADER`; `_build_visual_doctrine`/`_drop_pollinations_when_banana_active`/`_collect_graphic_minimum_issues`; `ImageGenerationFailed` class; `_load_config(silent=...)`, `_restore_project` filtered-settings restore (v7).
+- `C:/Users/jason/OneDrive/Desktop/bgee/book_engine.py` — Bridge; `_SCAFFOLD_LOGLINE`/`_SCAFFOLD_BEATS`/`_is_real_logline`/`_is_real_beat`/`validate_real_content`/`stage_with_retry`/`ContentGenerationError`.
 - `C:/Users/jason/OneDrive/Desktop/bgee/libriscribe/src/libriscribe/utils/llm_client.py` — `f8ff9bb` Pollinations fix: system msg + `_is_degenerate` (staticmethod) + guard in `generate_content`.
 - `C:/Users/jason/OneDrive/Desktop/bgee/libriscribe/src/libriscribe/voice.py` — `voice_directive`, `derive_tone`.
 - `C:/Users/jason/OneDrive/Desktop/bgee/libriscribe/src/libriscribe/utils/voice_prefix.py` — `voice_lead`.
@@ -92,3 +96,4 @@
 - `C:/Users/jason/OneDrive/Desktop/bgee/libriscribe/src/libriscribe/agents/chapter_writer.py` — `_is_graphic`; graphic branch.
 - `C:/Users/jason/OneDrive/Desktop/bgee/author_voices.py` — children voices, `visual_style`, `research_author_voice`, `DEFAULT_PROSE`, `get_author_voice` (tolerant of joined genre).
 - `C:/Users/jason/OneDrive/Desktop/bgee/image_providers.py` — `IMAGE_QUALITY_SUFFIX`, `IMAGE_NEGATIVE`, Pollinations flux/enhance/1024, `GoogleNanoBananaProvider` (Vertex AI path), `NANO_BANANA_MODELS` includes "Nano Banana Lite".
+- `C:/Users/jason/OneDrive/Desktop/bgee/book_config.json` — `image_provider=Google Nano Banana`, `use_vertex_ai=True`, `vertex_project_id=gen-lang-client-0397607711`, `vertex_location=us-central1`, model `gemini-3.1-flash-image` (Nano Banana 2).
