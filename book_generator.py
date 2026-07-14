@@ -121,6 +121,148 @@ _HOVER_DESCRIPTIONS = {
 
 _AUDIENCE_DESCRIPTIONS = AUDIENCE_GUIDANCE
 
+AUDIENCE_VISUAL_GUIDANCE = {
+    "Children":     "Soft peril only: menacing shadows, glowing eyes, gentle monster silhouettes. Wholesome, warm colors.",
+    "Middle Grade": "Stylized peril: cartoonish claw marks, faint scars, simple shadow villains. Rich colors but not grim.",
+    "Young Adult":  "PG-13 fantasy combat: armoured wounds, magical burns, occasional severed dragon head shown as silhouette. Cinematic chiaroscuro; no explicit gore.",
+    "Adult":        "Frank fantasy violence when story demands: beheading, dismemberment, battlefield carnage. Painterly / realist-leaning palette.",
+    "All Ages":     "PG-equivalent of the genre: victory-scene peril at most. Clean comic linework.",
+}
+
+AUDIENCE_VIOLENCE_FORBIDDEN = {
+    "Children":    "FORBIDDEN: severed body parts, blood pools, modern firearms, torture, detailed corpses, sexual content of any kind.",
+    "Middle Grade":"FORBIDDEN: dismemberment, glistening gore, modern firearms, torture, sexual content.",
+    "Young Adult": "FORBIDDEN: sexualized violence, sustained torture, flinching/body horror for its own sake.",
+    "Adult":       "(rely on writer judgment; no hard lines).",
+    "All Ages":    "FORBIDDEN: anything beyond stylized implied peril at most.",
+}
+
+AUTHOR_CHAPTER_HEADER = {
+    "Children":    False,
+    "Middle Grade": True,
+    "Young Adult":  True,
+    "Adult":        True,
+    "All Ages":     True,
+}
+
+
+def _audience_image_directive(audience: str) -> str:
+    g = AUDIENCE_VISUAL_GUIDANCE.get(audience, "")
+    f = AUDIENCE_VIOLENCE_FORBIDDEN.get(audience, "")
+    if g and f and not str(f).startswith("(rely"):
+        return f"AUDIENCE: {audience}. {g} {f}"
+    if g:
+        return f"AUDIENCE: {audience}. {g}"
+    return ""
+
+
+def _chapter_header_enabled(audience: str) -> bool:
+    return AUTHOR_CHAPTER_HEADER.get(audience, True)
+
+
+def _drop_pollinations_when_banana_active(
+    configs: List["ImageProviderConfig"],
+    banana_enabled: bool,
+) -> List["ImageProviderConfig"]:
+    """Block 3: drop Pollinations from the image-router config list when
+    Google Nano Banana is actively enabled. Returns a new list; never mutates
+    the input. If Banana is not enabled, returns the list unchanged.
+    """
+    if not banana_enabled:
+        return list(configs)
+    return [c for c in configs if getattr(c, "name", "") != "Pollinations"]
+
+
+# Block 7 — graphic-novel content minimums. We refuse to render an
+# export if the engine produced empty or scaffold page text and we
+# know the format is graphic-novel.
+_GRAPHIC_SCAFFOLD_TEXT = (
+    "[scene content unavailable]",
+    "[scene 1 content unavailable]",
+    "no logline available",
+    "the story continues with new developments.",
+    "a new chapter in the unfolding story.",
+)
+_MIN_PAGE_CHARS = 40
+
+
+def _collect_graphic_minimum_issues(book: Dict) -> list:
+    issues: list = []
+    pages = book.get("pages") or []
+    if not pages:
+        issues.append("engine produced 0 pages")
+        return issues
+    empty_text = 0
+    scaffold_text = 0
+    for idx, p in enumerate(pages, start=1):
+        text = (p.get("text") or "").strip()
+        if not text:
+            empty_text += 1
+            continue
+        low = text.lower().strip()
+        if low in _GRAPHIC_SCAFFOLD_TEXT or "scene content unavailable" in low:
+            scaffold_text += 1
+        elif len(text) < _MIN_PAGE_CHARS and low.startswith("**scene"):
+            scaffold_text += 1
+    if empty_text:
+        issues.append(f"{empty_text} pages have empty text")
+    if scaffold_text:
+        issues.append(f"{scaffold_text} pages contain only scaffold text")
+
+    chars = book.get("characters") or []
+    if not chars:
+        issues.append("graphic-novel must have at least one character")
+    return issues
+
+
+def _build_visual_doctrine(book: Dict) -> str:
+    """Build a concise cross-page character/location visual doctrine.
+
+    Returns a short directive suitable for prepending to every image prompt so
+    the generative model renders the same face/hair/clothing/palette across
+    every page. Returns "" if there's not enough structured data.
+    """
+    try:
+        chars = (book.get("characters") or [])[:3]
+        locs = (book.get("locations") or [])[:2]
+    except Exception:
+        return ""
+    parts = []
+    for c in chars:
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("name") or "").strip()
+        desc = (
+            c.get("physical_description")
+            or c.get("description")
+            or c.get("background")
+            or ""
+        ).strip()
+        if not name and not desc:
+            continue
+        if desc:
+            parts.append(f"{name}: {desc}" if name else desc)
+        else:
+            parts.append(name)
+    for loc in locs:
+        if not isinstance(loc, dict):
+            continue
+        name = (loc.get("name") or loc.get("title") or "").strip()
+        desc = (loc.get("description") or loc.get("summary") or "").strip()
+        if not name:
+            continue
+        if desc:
+            parts.append(f"Location {name}: {desc}")
+        else:
+            parts.append(f"Location {name}")
+    if not parts:
+        return ""
+    return (
+        "VISUAL DOCTRINE — keep all character/location features IDENTICAL across every "
+        "page: " + "; ".join(parts)
+    )
+
+
 AUTHOR_CHAPTER_STYLE = {
     "Margaret Weis & Tracy Hickman": (5, 8),
     "R.A. Salvatore": (6, 7),
@@ -361,6 +503,18 @@ class WorkerSignals(QObject):
     page_ready = pyqtSignal(int, str, str)
 
 
+class ImageGenerationFailed(RuntimeError):
+    """Raised when the image router fails to deliver an image after retries.
+
+    Carries a 1-based page index and the last error string so the GUI
+    can surface a precise failure reason (per Block 2).
+    """
+    def __init__(self, page_index: int, message: str):
+        super().__init__(f"Image generation failed on page {page_index}: {message}")
+        self.page_index = page_index
+        self.message = message
+
+
 class EngineGenerationWorker(QRunnable):
     """Background worker that runs the LibriScribe/BookEngine pipeline."""
 
@@ -371,6 +525,8 @@ class EngineGenerationWorker(QRunnable):
         self.image_router = image_router
         self.signals = WorkerSignals()
         self._cancelled = False
+        self._visual_doctrine = ""
+        self._book = None
 
     def cancel(self):
         self._cancelled = True
@@ -386,6 +542,10 @@ class EngineGenerationWorker(QRunnable):
         if av and getattr(av, 'name', ''):
             return f"art style evocative of {av.name}'s illustrated books"
         return ""
+
+    def _audience_for(self, book: Dict) -> str:
+        md = (book.get('metadata') or {})
+        return (md.get('audience') or self.settings.get('audience', '') or '').strip()
 
     def _llm_text(self, prompt: str) -> str:
         """Run a text prompt through the engine's LLM client (or free fallback)."""
@@ -451,6 +611,24 @@ class EngineGenerationWorker(QRunnable):
         if not book:
             raise RuntimeError('Book engine returned empty book data')
 
+        genre = book.get('metadata', {}).get('genre', self.settings.get('genre', ''))
+        if _is_graphic(genre):
+            issues = _collect_graphic_minimum_issues(book)
+            if issues:
+                raise RuntimeError(
+                    "Graphic-novel content did not meet export minimums: "
+                    + "; ".join(issues)
+                )
+
+        self._book = book
+        self._visual_doctrine = _build_visual_doctrine(book) or ""
+        if not self._visual_doctrine:
+            try:
+                self.signals.progress.emit(
+                    "No structured character/location data — visuals will rely on author style only.")
+            except Exception:
+                pass
+
         self._generate_images(book)
         return book
 
@@ -474,12 +652,17 @@ class EngineGenerationWorker(QRunnable):
 
 
         pages = book.get('pages', [])
+        audience_directive = _audience_image_directive(self._audience_for(book))
+        visual_doctrine = self._visual_doctrine or ''
         if image_freq == 'every_page':
             for idx, page in enumerate(pages):
                 if self._cancelled:
                     raise RuntimeError('Generation cancelled')
                 self.signals.progress.emit(f'Generating image {idx+1}/{len(pages)}...')
-                art_prompt = f'{style_phrase}, {self._author_art_hint()}, {genre} book art: {page.get("text", "")[:120]}'
+                art_prompt = (
+                    f'{style_phrase}, {self._author_art_hint()}, {audience_directive}, '
+                    f'{visual_doctrine}, {genre} book art: {page.get("text", "")[:120]}'
+                ).replace(', ,', ',')
                 try:
                     res, _ = self.image_router.generate(art_prompt)
                     if res.ok:
@@ -493,7 +676,10 @@ class EngineGenerationWorker(QRunnable):
                 if self._cancelled:
                     raise RuntimeError('Generation cancelled')
                 self.signals.progress.emit(f'Generating image for page {idx+1}...')
-                art_prompt = f'{style_phrase}, {self._author_art_hint()}, {genre} book art: {page.get("text", "")[:120]}'
+                art_prompt = (
+                    f'{style_phrase}, {self._author_art_hint()}, {audience_directive}, '
+                    f'{visual_doctrine}, {genre} book art: {page.get("text", "")[:120]}'
+                ).replace(', ,', ',')
                 try:
                     res, _ = self.image_router.generate(art_prompt)
                     if res.ok:
@@ -510,7 +696,11 @@ class EngineGenerationWorker(QRunnable):
                 if self._cancelled:
                     raise RuntimeError('Generation cancelled')
                 self.signals.progress.emit(f'Generating chapter image: {chapter}...')
-                art_prompt = f'{style_phrase}, {self._author_art_hint()}, {genre} chapter illustration, {chapter}: {page.get("text", "")[:120]}'
+                art_prompt = (
+                    f'{style_phrase}, {self._author_art_hint()}, {audience_directive}, '
+                    f'{visual_doctrine}, {genre} chapter illustration, {chapter}: '
+                    f'{page.get("text", "")[:120]}'
+                ).replace(', ,', ',')
                 try:
                     res, _ = self.image_router.generate(art_prompt)
                     if res.ok:
@@ -519,7 +709,11 @@ class EngineGenerationWorker(QRunnable):
                     pass
 
         self.signals.progress.emit('Generating cover...')
-        cover_prompt = f'{style_phrase}, {self._author_art_hint()}, {genre} book cover, KDP 2560x1600, professional: {theme} in {setting}. Title: {title}'
+        cover_prompt = (
+            f'{style_phrase}, {self._author_art_hint()}, {audience_directive}, '
+            f'{visual_doctrine}, {genre} book cover, KDP 2560x1600, professional: '
+            f'{theme} in {setting}. Title: {title}'
+        ).replace(', ,', ',')
         try:
             res, _ = self.image_router.generate(cover_prompt)
             if res.ok:
@@ -606,14 +800,59 @@ class EngineGenerationWorker(QRunnable):
             y += int(font.size * 1.25)
         return y
 
-    def _letter_gn_image(self, img_path: str, script: Dict) -> Optional[str]:
+    def _load_pil_font(self, size: int):
+        """Try to load a real TTF font; fall back to PIL default.
+
+        Honors Windows system fonts (Segoe UI, Arial, Consolas, Verdana)
+        first so lettered image text is readable; on other platforms
+        drops straight to PIL's bundled default.
+        """
+        try:
+            from PIL import ImageFont
+        except Exception:
+            return None
+        candidates = []
+        if sys.platform == "win32":
+            win_fonts = os.environ.get("WINDIR", r"C:\Windows") + r"\Fonts"
+            candidates += [
+                os.path.join(win_fonts, "segoeuib.ttf"),  # Segoe UI Semibold
+                os.path.join(win_fonts, "segoeui.ttf"),
+                os.path.join(win_fonts, "arialbd.ttf"),
+                os.path.join(win_fonts, "arial.ttf"),
+                os.path.join(win_fonts, "consola.ttf"),
+            ]
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+        try:
+            return ImageFont.load_default()
+        except Exception:
+            return None
+
+    def _letter_gn_image(
+        self,
+        img_path: str,
+        script: Dict,
+        *,
+        draw_chapter_strip: bool = False,
+        chapter_label: str = "",
+        page_index: Optional[int] = None,
+        total_pages: Optional[int] = None,
+    ) -> Optional[str]:
         """Composite narrator caption + speech bubbles onto the page image.
+
+        Optional overlays (Block 5):
+          * Top-left chapter title strip on the first page of each chapter
+            (skipped for "Children" audience by the caller).
+          * Bottom-right page-number badge (always-on, e.g. "3 / 12").
 
         Returns the lettered image path (falls back to the original when PIL
         is unavailable). Uses only PIL (no external font deps).
         """
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw, ImageFont  # noqa: F401
         except Exception:
             return None
         try:
@@ -622,22 +861,44 @@ class EngineGenerationWorker(QRunnable):
             return None
         W, H = img.size
         draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.load_default()
-        except Exception:
-            font = None
 
-        # Narrator caption bar (top)
+        # Chapter title strip (Block 5) — drawn first so bubbles can overlap.
+        if draw_chapter_strip and chapter_label:
+            header_h = max(28, int(H * 0.07))
+            strip_font = self._load_pil_font(max(14, int(H * 0.035)))
+            draw.rectangle([(0, 0), (W, header_h)], fill=(0, 0, 0, 170))
+            text_color = (255, 255, 255, 255)
+            label = str(chapter_label).strip()
+            if label:
+                if strip_font is not None:
+                    draw.text(
+                        (16, max(4, (header_h - int(H * 0.04)) // 2)),
+                        label[:90],
+                        font=strip_font,
+                        fill=text_color,
+                    )
+                else:
+                    draw.text((16, 6), label[:90], fill=text_color)
+
+        # Narrator caption bar (existing behavior). If the chapter header
+        # already drew on the top strip, push the narrator bar below it.
         narrator = script.get("narrator", "")
-        if narrator and font:
+        if narrator:
+            default_font = self._load_pil_font(max(14, int(H * 0.04)))
+            bar_top = header_h if draw_chapter_strip and chapter_label else 0
             bar_h = max(24, int(H * 0.10))
-            draw.rectangle([(0, 0), (W, bar_h)], fill=(0, 0, 0, 150))
-            self._draw_text_wrapped(draw, (10, 6), narrator,
-                                   font, W - 20, (255, 255, 255, 255))
+            draw.rectangle([(0, bar_top), (W, bar_top + bar_h)],
+                           fill=(0, 0, 0, 150))
+            if default_font is not None:
+                self._draw_text_wrapped(
+                    draw, (10, bar_top + 6), narrator,
+                    default_font, W - 20, (255, 255, 255, 255),
+                )
 
         # Speech bubbles (bottom-up)
         dialogue = script.get("dialogue", [])
-        if dialogue and font:
+        bubble_font = self._load_pil_font(max(14, int(H * 0.04)))
+        if dialogue and bubble_font is not None:
             n = len(dialogue)
             bubble_h = max(26, int(H * 0.12))
             gap = 6
@@ -649,7 +910,42 @@ class EngineGenerationWorker(QRunnable):
                              fill=(255, 255, 255, 235),
                              outline=(0, 0, 0, 255))
                 self._draw_text_wrapped(draw, (18, top + 5), line,
-                                       font, W - 36, (0, 0, 0, 255))
+                                        bubble_font, W - 36, (0, 0, 0, 255))
+
+        # Page-number badge (always emitted in graphic-novel flow).
+        if page_index is not None and total_pages:
+            try:
+                badge_font = self._load_pil_font(max(12, int(H * 0.022)))
+                pad_x = 12
+                pad_y = 6
+                txt = f"{int(page_index)} / {int(total_pages)}"
+                tw = 0
+                th = 0
+                if badge_font is not None:
+                    try:
+                        bbox = badge_font.getbbox(txt)
+                        tw = (bbox[2] - bbox[0]) if bbox else len(txt) * 7
+                        th = (bbox[3] - bbox[1]) if bbox else int(H * 0.022)
+                    except Exception:
+                        tw = len(txt) * 7
+                        th = int(H * 0.022)
+                box_w = tw + pad_x * 2
+                box_h = th + pad_y * 2
+                x0 = max(0, W - box_w - 14)
+                y0 = max(0, H - box_h - 14)
+                draw.rectangle(
+                    [(x0, y0), (x0 + box_w, y0 + box_h)],
+                    fill=(0, 0, 0, 170),
+                )
+                if badge_font is not None:
+                    draw.text(
+                        (x0 + pad_x, y0 + pad_y),
+                        txt,
+                        font=badge_font,
+                        fill=(255, 255, 255, 255),
+                    )
+            except Exception:
+                pass
 
         out = img_path.rsplit(".", 1)[0] + "_lettered.png"
         try:
@@ -670,7 +966,13 @@ class EngineGenerationWorker(QRunnable):
         author_art = self._author_art_hint()
         theme = self.settings.get("theme", "")
         setting = self.settings.get("setting", "")
+        audience = self._audience_for(book)
+        audience_directive = _audience_image_directive(audience)
+        visual_doctrine = self._visual_doctrine or ""
+        header_enabled = _chapter_header_enabled(audience)
+        total_pages = max(1, len(pages))
 
+        prev_chapter = None
         for idx, page in enumerate(pages):
             if self._cancelled:
                 raise RuntimeError("Generation cancelled")
@@ -698,20 +1000,44 @@ class EngineGenerationWorker(QRunnable):
                     "Keep each dialogue line <=12 words. Scene:\n" + prose[:700]
                 )
                 script = self._parse_gn_script(self._llm_text(script_prompt))
+                if not script.get("panels"):
+                    raise RuntimeError(
+                        f"Page {idx+1}: panel script generation returned no panels.")
 
-            # 2) Spill the panel descriptions into the image generator
+            # 2) Spill the panel descriptions into the image generator.
             panel_desc = " | ".join(
                 p.get("desc", "") for p in script["panels"]
             ) or prose[:200]
-            art_prompt = (
-                f"{author_art}, {genre} graphic novel page art: {panel_desc[:220]}"
-            )
-            try:
-                res, _ = self.image_router.generate(art_prompt)
-            except Exception:
-                res = None
-            if not res or not res.ok:
-                continue
+            full_prompt = (
+                f"{author_art}, {audience_directive}, {visual_doctrine}, "
+                f"{genre} graphic novel page art: {panel_desc[:220]}"
+            ).replace(", ,", ",").strip()
+
+            # Block 2: retry up to 3 attempts — same prompt, then simplified,
+            # then raise ImageGenerationFailed if all fail. No silent skip,
+            # so export can never ship a half-illustrated graphic novel.
+            attempts = [
+                full_prompt,
+                full_prompt,
+                f"{author_art}, {genre} graphic novel page art: {panel_desc[:220]}",
+            ]
+            res = None
+            last_err = None
+            for attempt_idx, attempt_prompt in enumerate(attempts, start=1):
+                try:
+                    res, _ = self.image_router.generate(attempt_prompt)
+                except Exception as e:
+                    last_err = f"{type(e).__name__}: {e}"
+                    res = None
+                if res and getattr(res, "ok", False) and getattr(res, "path", ""):
+                    break
+                last_err = last_err or (getattr(res, "error", "") or "unknown")
+                if attempt_idx < len(attempts):
+                    time.sleep(1.0)
+
+            if not res or not getattr(res, "ok", False) or not getattr(res, "path", ""):
+                raise ImageGenerationFailed(
+                    idx + 1, last_err or "all image providers failed")
             img_path = res.path
 
             # 3) If we derived the script via LLM, let the editor refine the
@@ -730,20 +1056,39 @@ class EngineGenerationWorker(QRunnable):
                 if edited.get("narrator"):
                     script["narrator"] = edited["narrator"]
 
-            # 4) Lettering: composite bubbles + caption onto the art
-            lettered = self._letter_gn_image(img_path, script)
+            # Block 5: chapter strip on the first page of each new chapter
+            # (skipped for "Children" audience).
+            chapter_label = page.get("chapter", "") or ""
+            draw_chapter_strip = bool(
+                header_enabled
+                and chapter_label
+                and chapter_label != prev_chapter
+            )
+            prev_chapter = chapter_label or prev_chapter
+
+            # 4) Lettering: chapter strip + page badge + bubbles + caption.
+            lettered = self._letter_gn_image(
+                img_path,
+                script,
+                draw_chapter_strip=draw_chapter_strip,
+                chapter_label=chapter_label,
+                page_index=idx + 1,
+                total_pages=total_pages,
+            )
             page["img_url"] = lettered or img_path
             page["gn_script"] = script
 
-        # Cover (visual-first, no text)
+        # Cover (visual-first, no text). Use the same visual doctrine +
+        # audience directive so cover and pages match.
         self.signals.progress.emit("Generating cover...")
         cover_prompt = (
-            f"{author_art}, {genre} graphic novel cover art, professional: "
+            f"{author_art}, {audience_directive}, {visual_doctrine}, "
+            f"{genre} graphic novel cover art, professional: "
             f"{theme} in {setting}. No text, no titles."
-        )
+        ).replace(", ,", ",").strip()
         try:
             res, _ = self.image_router.generate(cover_prompt)
-            if res.ok:
+            if res.ok and getattr(res, "path", ""):
                 book["cover_url"] = res.path
         except Exception:
             pass
@@ -2291,6 +2636,10 @@ class BookGeneratorApp(QMainWindow):
         else:
             configs = [ImageProviderConfig(name='Pollinations', api_key='', enabled=True, priority=0)]
 
+        configs = _drop_pollinations_when_banana_active(
+            configs,
+            banana_enabled=('Google' in provider_name),
+        )
         self.image_router = ImageRouter(configs=configs)
 
         self.img_status.setText(f'Testing {provider_name}...')
@@ -2465,6 +2814,11 @@ class BookGeneratorApp(QMainWindow):
             configs = [ImageProviderConfig(name='HFSpace', api_key=image_api_key, model=image_model, enabled=True, priority=0)]
         else:
             configs = [ImageProviderConfig(name='Pollinations', api_key='', enabled=True, priority=0)]
+
+        configs = _drop_pollinations_when_banana_active(
+            configs,
+            banana_enabled=('Google' in image_provider),
+        )
         self.image_router = ImageRouter(configs=configs)
 
         saved_text_model = config.get('text_model', '')

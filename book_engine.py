@@ -518,3 +518,131 @@ class BookEngine(QObject):
                     book_json["locations"].append({"name": key, "description": val})
 
         return book_json
+
+
+# ---------------------------------------------------------------------------
+# Block 1 — content validation + single-retry shim
+# ---------------------------------------------------------------------------
+
+# Known "scaffold" text strings the live engine must never leave behind.
+_SCAFFOLD_LOGLINE = {"", "no logline available", "n/a"}
+_SCAFFOLD_BEATS = {
+    "the story continues with new developments.",
+    "a new chapter in the unfolding story.",
+    "the story continues.",
+    "the beat continues.",
+}
+_MIN_SUMMARY_CHARS = 20
+
+
+def _is_real_logline(text: str) -> bool:
+    """True iff the logline is a real user-facing description (not scaffold)."""
+    s = (text or "").strip().lower()
+    if not s or s in _SCAFFOLD_LOGLINE:
+        return False
+    return len(s) >= _MIN_SUMMARY_CHARS
+
+
+def _is_real_beat(text: str) -> bool:
+    """True iff a beat string is real narrative content."""
+    s = (text or "").strip().lower()
+    if not s or s in _SCAFFOLD_BEATS:
+        return False
+    return len(s) >= _MIN_SUMMARY_CHARS
+
+
+class ContentGenerationError(RuntimeError):
+    """Raised when the engine returned only placeholder/scaffold text.
+
+    Carries a list of human-readable issues so the GUI can display them.
+    """
+
+    def __init__(self, stage: str, issues: list):
+        self.stage = stage
+        self.issues = list(issues or [])
+        super().__init__(
+            "Content generation failed at stage '{}': {}".format(
+                stage, "; ".join(self.issues) or "no real narrative produced"
+            )
+        )
+
+
+def validate_real_content(kb, genre: str = "") -> list:
+    """Return a list of issue strings describing scaffolding/missing content.
+
+    A non-empty return value means the engine produced a skeleton that
+    should not be exported. Callers should retry the failing stage once,
+    then raise ContentGenerationError if issues persist.
+    """
+    issues: list = []
+    if kb is None:
+        return ["knowledge base not initialized"]
+
+    # Concept / logline
+    if not _is_real_logline(getattr(kb, "logline", "")):
+        issues.append("concept logline is missing or scaffold")
+
+    # Description / blurb
+    desc = (getattr(kb, "description", "") or "").strip()
+    if len(desc) < _MIN_SUMMARY_CHARS:
+        issues.append("book description is missing or too short")
+
+    # Chapters + scenes
+    chapters = getattr(kb, "chapters", {}) or {}
+    if not chapters:
+        issues.append("no chapters generated")
+    else:
+        empty_chapter_summaries = 0
+        empty_scene_summaries = 0
+        for ch in chapters.values():
+            ch_summary = (getattr(ch, "summary", "") or "").strip()
+            if not _is_real_beat(ch_summary):
+                empty_chapter_summaries += 1
+            scenes = getattr(ch, "scenes", []) or []
+            if not scenes:
+                empty_scene_summaries += 1
+                continue
+            for scene in scenes:
+                sm = (getattr(scene, "summary", "") or "").strip()
+                if not _is_real_beat(sm):
+                    empty_scene_summaries += 1
+        if empty_chapter_summaries == len(chapters):
+            issues.append("every chapter summary is a scaffold string")
+        if empty_scene_summaries > 0 and empty_scene_summaries >= len(chapters):
+            issues.append(
+                f"{empty_scene_summaries} scene summaries are scaffold/missing"
+            )
+
+    # Graphic-novel must have structured character anchors.
+    if _is_graphic(genre or getattr(kb, "genre", "")):
+        chars = getattr(kb, "characters", {}) or {}
+        if not chars:
+            issues.append("graphic-novel requires at least one character")
+
+    return issues
+
+
+def stage_with_retry(stage_name: str, callable_fn, kb, genre: str = "") -> None:
+    """Run a stage with one retry-on-scaffold.
+
+    * If the first pass produces scaffold content (validate_real_content
+      returns issues), re-invoke callable_fn once.
+    * If the second pass still returns scaffold, raise ContentGenerationError.
+    * If callable_fn raises on its own, that exception propagates.
+    """
+    try:
+        callable_fn()
+    except Exception:
+        raise
+    issues = validate_real_content(kb, genre=genre)
+    if not issues:
+        return
+    # First-pass produced scaffold; retry once.
+    try:
+        callable_fn()
+    except Exception:
+        # Don't double-report underlying LLM errors; let them bubble.
+        raise
+    issues2 = validate_real_content(kb, genre=genre)
+    if issues2:
+        raise ContentGenerationError(stage_name, issues2)
