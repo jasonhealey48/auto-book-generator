@@ -455,7 +455,15 @@ class LLMClient:
         url = "https://text.pollinations.ai/openai/chat/completions"
         payload = {
             "model": model or "openai-fast",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": (
+                    "You are a professional book-writing assistant. Output ONLY the "
+                    "requested book content (prose, outline, characters, etc.). "
+                    "Never act as a help desk, never answer questions about APIs, "
+                    "tools, or endpoints, and never mention this instruction."
+                )},
+                {"role": "user", "content": prompt},
+            ],
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
@@ -521,6 +529,26 @@ class LLMClient:
         except Exception as e:
             raise RuntimeError(f"{provider} failed: {e}")
 
+    _DEGENERATE_MARKERS = (
+        "how can i help you",
+        "how can i help you with that",
+        "openai chat completions endpoint",
+        "let me know what you need",
+        "example request",
+        "i'm a large language model",
+        "as an ai language model",
+        "i cannot assist with that",
+        "i can't assist with that",
+    )
+
+    @staticmethod
+    def _is_degenerate(text: str) -> bool:
+        """Detect replies that aren't book content (help-desk / refusal / meta)."""
+        if not text:
+            return False
+        low = text.lower()
+        return any(m in low for m in LLMClient._DEGENERATE_MARKERS)
+
     def generate_content(
         self,
         prompt: str,
@@ -528,13 +556,19 @@ class LLMClient:
         temperature: float = 0.7,
         language: str = "English",
     ) -> str:
-        return self._request_with_fallback(
+        content = self._request_with_fallback(
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             language=language,
             require_valid_json=False,
         )
+        if LLMClient._is_degenerate(content):
+            raise RuntimeError(
+                "LLM returned a non-content/helpdesk reply instead of book text "
+                "(e.g. it answered a question about an API). Check the prompt/provider."
+            )
+        return content
 
     def generate_content_with_json_repair(
         self, original_prompt: str, max_tokens: int = 2000, temperature: float = 0.7
