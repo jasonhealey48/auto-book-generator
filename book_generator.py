@@ -216,51 +216,69 @@ def _collect_graphic_minimum_issues(book: Dict) -> list:
 
 
 def _build_visual_doctrine(book: Dict) -> str:
-    """Build a concise cross-page character/location visual doctrine.
+    """Build a strong cross-page character/location visual doctrine.
 
-    Returns a short directive suitable for prepending to every image prompt so
-    the generative model renders the same face/hair/clothing/palette across
-    every page. Returns "" if there's not enough structured data.
+    Returns a directive suitable for prepending to every image prompt. The
+    directive is structured so an image model has explicit per-character
+    anchors (face, hair, clothing, palette, props) and per-location anchors
+    (architecture, lighting, palette). Anchors are produced from whatever
+    fields the schema provides; the directive is omitted entirely if no
+    structured data is available.
     """
     try:
         chars = (book.get("characters") or [])[:3]
         locs = (book.get("locations") or [])[:2]
     except Exception:
         return ""
-    parts = []
+
+    char_lines = []
     for c in chars:
         if not isinstance(c, dict):
             continue
         name = (c.get("name") or "").strip()
-        desc = (
-            c.get("physical_description")
-            or c.get("description")
-            or c.get("background")
-            or ""
-        ).strip()
-        if not name and not desc:
+        if not name:
             continue
-        if desc:
-            parts.append(f"{name}: {desc}" if name else desc)
+        parts_blob = " + ".join(filter(bool, [
+            (c.get("physical_description") or "").strip(),
+            (c.get("description") or "").strip(),
+            (c.get("background") or "").strip(),
+            (c.get("role") or "").strip(),
+        ]))
+        if parts_blob:
+            char_lines.append(f"      - {name}: {parts_blob} (keep this look across every page)")
         else:
-            parts.append(name)
+            char_lines.append(f"      - {name}: (render this named character consistently across every page)")
+
+    loc_lines = []
     for loc in locs:
         if not isinstance(loc, dict):
             continue
         name = (loc.get("name") or loc.get("title") or "").strip()
-        desc = (loc.get("description") or loc.get("summary") or "").strip()
         if not name:
             continue
-        if desc:
-            parts.append(f"Location {name}: {desc}")
+        parts_blob = " + ".join(filter(bool, [
+            (loc.get("description") or "").strip(),
+            (loc.get("summary") or "").strip(),
+        ]))
+        if parts_blob:
+            loc_lines.append(f"      - {name}: {parts_blob} (render this location the same every time)")
         else:
-            parts.append(f"Location {name}")
-    if not parts:
+            loc_lines.append(f"      - {name}: (render this location consistently)")
+
+    if not char_lines and not loc_lines:
         return ""
-    return (
-        "VISUAL DOCTRINE — keep all character/location features IDENTICAL across every "
-        "page: " + "; ".join(parts)
+
+    blocked = (
+        "VISUAL DOCTRINE — every page MUST match this exactly. "
+        "Do not vary face, hair, clothing, palette, props, scene, or composition across the book. "
+        "Re-use the same character illustration verbatim unless the scene explicitly demands a change."
     )
+    body = []
+    if char_lines:
+        body.append("CHARACTERS (keep canonical):\n" + "\n".join(char_lines))
+    if loc_lines:
+        body.append("LOCATIONS (keep canonical):\n" + "\n".join(loc_lines))
+    return blocked + "\n" + "\n".join(body)
 
 
 AUTHOR_CHAPTER_STYLE = {
@@ -1562,7 +1580,7 @@ class BookGeneratorApp(QMainWindow):
         self._outline_updating = False
 
         self._build_ui()
-        self._load_config()
+        self._load_config(silent=True)
         self._probe_all()
         self._restore_project()
 
@@ -2660,14 +2678,22 @@ class BookGeneratorApp(QMainWindow):
             json.dump(config, f, indent=2)
         QMessageBox.information(self, 'Saved', f'Config saved to {CONFIG_FILE}')
 
-    def _load_config(self):
+    def _load_config(self, *, silent: bool = False) -> None:
+        """Load settings from CONFIG_FILE into the GUI.
+
+        silent=True is used on startup: the auto-load must NEVER block with a
+        modal dialog or the user sees no window. When silent=False (user
+        clicked the "Load Config" button) we *do* surface a confirmation.
+        """
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             self._apply_config(config)
-            QMessageBox.information(self, 'Loaded', f'Config loaded from {CONFIG_FILE}')
+            if not silent:
+                QMessageBox.information(self, 'Loaded', f'Config loaded from {CONFIG_FILE}')
         else:
-            QMessageBox.warning(self, 'Not Found', f'{CONFIG_FILE} does not exist.')
+            if not silent:
+                QMessageBox.warning(self, 'Not Found', f'{CONFIG_FILE} does not exist.')
 
     def selected_genres(self) -> str:
         """Return the checked genres as a comma-joined string (e.g. 'Graphic Novel, Fantasy')."""
@@ -3540,8 +3566,20 @@ class BookGeneratorApp(QMainWindow):
         self._refresh_images_tab()
         self._populate_finished_tab(book)
 
+        # v7 fix: pin image/text model routing settings to book_config.json.
+        # Project files may carry stale image_provider / use_vertex_ai etc. from
+        # prior runs. We only restore "content" keys (theme, genre, audience,
+        # author_voice, num_pages, etc.) — never image-routing keys.
         if settings:
-            self._apply_config(settings)
+            content_keys = {
+                'theme', 'setting', 'genre', 'audience', 'author_voice',
+                'num_pages', 'include_images', 'image_freq', 'img_interval',
+                'color_style', 'style_phrase', 'review_preference',
+                'worldbuilding_needed',
+            }
+            filtered = {k: v for k, v in settings.items() if k in content_keys}
+            if filtered:
+                self._apply_config(filtered)
 
         self.status_label.setText('Project restored.')
 
