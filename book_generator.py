@@ -1316,14 +1316,18 @@ class BookGeneratorApp(QMainWindow):
             return f"art style evocative of {av.name}'s illustrated books"
         return ""
 
-    def _llm_text(self, prompt: str) -> str:
+    def _llm_text(self, prompt: str, system: str = "") -> str:
         """Run a text prompt through the configured text provider (or free fallback)."""
         router = getattr(self, 'text_router', None)
         if router is not None:
             try:
-                res, _ = router.complete([{'role': 'user', 'content': prompt}])
-                if res:
-                    return res
+                messages = []
+                if system:
+                    messages.append({'role': 'system', 'content': system})
+                messages.append({'role': 'user', 'content': prompt})
+                res, _ = router.complete(messages)
+                if res is not None and getattr(res, 'text', ''):
+                    return res.text
             except Exception:
                 pass
         # Fallback: Pollinations anonymous text endpoint (no key).
