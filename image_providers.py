@@ -284,7 +284,7 @@ class HFSpaceImageProvider(ImageProvider):
 
 NANO_BANANA_MODELS = {
     "gemini-2.5-flash-image": "Nano Banana ($0.039/img — cheapest)",
-    "gemini-3.1-flash-lite-image": "Nano Banana 2 Lite ($0.067/img — fastest)",
+    "gemini-3.1-flash-lite-image": "Nano Banana Lite ($0.067/img — fastest)",
     "gemini-3.1-flash-image": "Nano Banana 2 ($0.067/img — best balance)",
 }
 
